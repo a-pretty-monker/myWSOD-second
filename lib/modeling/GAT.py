@@ -19,12 +19,13 @@ class GAT(torch.nn.Module):
         x = F.relu(x)
         x = F.dropout(x, training=self.training)
         x = self.conv2(x, edge_index)
+        z = x
         new_edge = GAE(x)
         x = F.relu(x)
         x = F.dropout(x, training=self.training)
         x = F.softmax(x, dim=1)
 
-        return x, new_edge
+        return x, z, new_edge
 
 
 

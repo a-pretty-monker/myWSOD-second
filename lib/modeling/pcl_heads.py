@@ -46,10 +46,10 @@ class mil_outputs(nn.Module):
         if x.dim() == 4:
             x = x.view(x.size(0), -1)
         mil_score0 = self.mil_score0(x)
-        mil_score1 = self.mil_score1(x, edges)
+        mil_score1, new_edge = self.mil_score1(x, edges)
         mil_score = F.softmax(mil_score0, dim=0) * mil_score1
 
-        return mil_score
+        return mil_score, new_edge
 
 
 class refine_outputs(nn.Module):

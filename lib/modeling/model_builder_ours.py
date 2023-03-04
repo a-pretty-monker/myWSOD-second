@@ -140,7 +140,8 @@ class Generalized_RCNN(nn.Module):
 
         # edges = edges[0]
         edge = box_utils.calculate_edges(rois.data.cpu().numpy()[:, 1:])
-        mil_score = self.Box_MIL_Outs(box_feat, edge)
+
+        mil_score, z, new_edge = self.Box_MIL_Outs(box_feat, edge)
         bg_fg_score = self.Box_BgFg_Outs(box_feat)
         refine_score = self.Box_Refine_Outs(box_feat)
         if cfg.MODEL.WITH_FRCNN:
@@ -160,6 +161,18 @@ class Generalized_RCNN(nn.Module):
             Chg_Weight = step > cfg.SOLVER.MAX_ITER * cfg.OICR.Bg2_Loss_Weight_ChgIter
             Bg2_Loss_Weight = cfg.OICR.Bg2_Loss_Weight_Chg if Chg_Weight else cfg.OICR.Bg2_Loss_Weight
 
+            #GAEloss
+
+            mask = 1 - np.diag(np.ones(matrix.shape[0]))
+            bg_index = np.nonzero((bg_fg_score < 0.5) * mask)
+            a = edges[0,:]
+            b = edges[1,:]
+            true_index = a not in bg_index & b not in bg_index
+            true_edges = edges[true_index]
+
+            gae_loss = new_edge.recon_loss(z, true_edges)*Bg2_Loss_Weight
+
+            return_dict['losses']['gae_loss'] = gae_loss.clone()
             if cfg.OICR.Bg2_Loss_Type == 'cross_entropy':
                 bgfg_loss = self.BgFg_Losses(bg_fg_score, pcl_output['labels'],
                                                 pcl_output['cls_loss_weights'])

@@ -2,7 +2,7 @@
 import torch
 import torch.nn.functional as F
 # 导入GCN层、GraphSAGE层和GAT层
-from torch_geometric.nn import GCNConv, SAGEConv, GATConv
+from torch_geometric.nn import GCNConv, SAGEConv, GATConv, GAE
 from torch_geometric.datasets import Planetoid
 
 class GAT(torch.nn.Module):
@@ -19,9 +19,15 @@ class GAT(torch.nn.Module):
         x = F.relu(x)
         x = F.dropout(x, training=self.training)
         x = self.conv2(x, edge_index)
+        new_edge = GAE(x)
         x = F.relu(x)
         x = F.dropout(x, training=self.training)
         x = F.softmax(x, dim=1)
 
-        return x
+        return x, new_edge
+
+
+
+# model = GAE(4096,4096//4,20)
+# print(model.state_dict())
 

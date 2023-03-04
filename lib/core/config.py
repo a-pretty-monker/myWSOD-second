@@ -484,6 +484,47 @@ __C.DEBUG = False
 # [Infered value]
 __C.PYTORCH_VERSION_LESS_THAN_040 = False
 
+# ---------------------------------------------------------------------------- #
+# ResNets options ("ResNets" = ResNet and ResNeXt)
+# ---------------------------------------------------------------------------- #
+__C.OICR = AttrDict()
+
+__C.OICR.Bg2_Loss_Type = 'cross_entropy'
+__C.OICR.Bg2_Loss_Weight = 1.0
+__C.OICR.Bg2_Loss_Weight_Chg = 1.0
+__C.OICR.Bg2_Loss_Weight_ChgIter = 2.0
+__C.OICR.Bg2_Loss_Multi = False
+__C.OICR.Bg2_Loss_Multi_Add = False
+__C.OICR.Bg2_Loss_Multi_Weight = 1.0
+__C.OICR.Bg2_StartIter = 0.0
+__C.OICR.Bg2_SelFg_Iou = 0.5
+__C.OICR.Bg2_SelGT_Type = 'oicr'
+__C.OICR.Bg2_SelGT_Ori_Type = 'oicr'
+__C.OICR.Bg2_SelGT_Iou = False
+__C.OICR.Bg2_SelGT_Iou_Thresh = 0.5
+__C.OICR.Bg2_SelGT_Multi = False
+__C.OICR.Bg2_SelGT_Ratio = 0.15
+__C.OICR.Bg2_Test = False
+__C.OICR.Bg2_Test_MIL = False
+__C.OICR.Bg2_Test_Type = 'add'
+__C.OICR.Bg2_Test_Type_BgWeight = 0.5
+
+__C.OICR.Need_Reg = False
+__C.OICR.Use_Reg_Lastbranch = False
+__C.OICR.Test_Need_Regcls = False
+__C.OICR.Weight_Firstbranch = 1.0
+__C.OICR.Weight_Otherbranch = 1.0
+__C.OICR.Weight_Lastbranch = 1.0
+__C.OICR.Balanced_Mil_Loss = False
+__C.OICR.Loss_MIL_Weight = 1.0
+__C.OICR.Loss_Balanced = False
+__C.OICR.Loss_Bg_Balanced = False
+__C.OICR.Loss_Reg_Balanced = False
+__C.OICR.Need_Mask = False
+__C.OICR.Debug = False
+__C.OICR.RANDOM_INI = False
+__C.OICR.MSCALES = False
+
 
 def assert_and_infer_cfg(make_immutable=True):
     """Call this function in your script after you have finished setting all cfg

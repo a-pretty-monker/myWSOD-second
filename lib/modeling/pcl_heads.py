@@ -84,6 +84,35 @@ class refine_outputs(nn.Module):
 
         return refine_score
 
+class refine_IND_outputs(nn.Module):
+    def __init__(self, dim_in, dim_out, nosoft=True):
+        super().__init__()
+        self.refine_score = nn.Linear(dim_in, dim_out)
+        self.nosoft = nosoft
+        self._init_weights()
+
+    def _init_weights(self):
+        init.normal_(self.refine_score.weight, std=0.01)
+        init.constant_(self.refine_score.bias, 0)
+
+    def detectron_weight_mapping(self):
+        detectron_weight_mapping = {
+            'refine_score.weight': 'refine_score_w',
+            'refine_score.bias': 'refine_score_b'
+        }
+        orphan_in_detectron = []
+        return detectron_weight_mapping, orphan_in_detectron
+
+    def forward(self, x):
+        if x.dim() == 4:
+            x = x.squeeze(3).squeeze(2)
+        x = self.refine_score(x)
+        if self.nosoft:
+            refine_score = x
+        else:
+            refine_score = F.softmax(x, dim=1)
+
+        return refine_score
 
 def mil_losses(cls_score, labels):
     cls_score = cls_score.clamp(1e-6, 1 - 1e-6)

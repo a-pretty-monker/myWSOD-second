@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 
+
 import numpy as np
 
 from core.config import cfg
@@ -82,11 +83,18 @@ class Generalized_RCNN(nn.Module):
 
         self.Box_Head = get_func(cfg.FAST_RCNN.ROI_BOX_HEAD)(
             self.Conv_Body.dim_out, self.roi_feature_transform, self.Conv_Body.spatial_scale)
-
+        if cfg.OICR.Bg2_Loss_Type == 'cross_entropy':
+            dim, nosoft = 2, False
+        elif cfg.OICR.Bg2_Loss_Type == 'binary_cross_entropy':
+            dim, nosoft = 1, True
         self.Box_MIL_Outs = pcl_heads.mil_outputs(
             self.Box_Head.dim_out, cfg.MODEL.NUM_CLASSES)
+        self.Box_BgFg_Outs = pcl_heads.refine_IND_outputs(
+            self.Box_Head.dim_out, dim, nosoft=nosoft)
         self.Box_Refine_Outs = pcl_heads.refine_outputs(
             self.Box_Head.dim_out, cfg.MODEL.NUM_CLASSES + 1)
+
+        self.BgFg_Losses = OICRLosses()
 
         self.Refine_Losses = [OICRLosses() for i in range(cfg.REFINE_TIMES)]
 
@@ -133,6 +141,7 @@ class Generalized_RCNN(nn.Module):
         # edges = edges[0]
         edge = box_utils.calculate_edges(rois.data.cpu().numpy()[:, 1:])
         mil_score = self.Box_MIL_Outs(box_feat, edge)
+        bg_fg_score = self.Box_BgFg_Outs(box_feat)
         refine_score = self.Box_Refine_Outs(box_feat)
         if cfg.MODEL.WITH_FRCNN:
             cls_score, bbox_pred = self.FRCNN_Outs(box_feat)
@@ -146,6 +155,20 @@ class Generalized_RCNN(nn.Module):
             im_cls_score = mil_score.sum(dim=0, keepdim=True)
             loss_im_cls = pcl_heads.mil_losses(im_cls_score, labels)
             return_dict['losses']['loss_im_cls'] = loss_im_cls
+
+            # bg_fg loss
+            Chg_Weight = step > cfg.SOLVER.MAX_ITER * cfg.OICR.Bg2_Loss_Weight_ChgIter
+            Bg2_Loss_Weight = cfg.OICR.Bg2_Loss_Weight_Chg if Chg_Weight else cfg.OICR.Bg2_Loss_Weight
+
+            if cfg.OICR.Bg2_Loss_Type == 'cross_entropy':
+                bgfg_loss = self.BgFg_Losses(bg_fg_score, pcl_output['labels'],
+                                                pcl_output['cls_loss_weights'])
+            elif cfg.OICR.Bg2_Loss_Type == 'binary_cross_entropy':
+                bgfg_loss = F.binary_cross_entropy_with_logits(bg_fg_score, pcl_output['labels'],
+                                                                        weight=pcl_output['cls_loss_weights'])
+            bgfg_loss = bgfg_loss * Bg2_Loss_Weight
+
+            return_dict['losses']['bgfg_loss'] = bgfg_loss.clone()
 
             # refinement loss
             boxes = rois.data.cpu().numpy()
@@ -185,6 +208,7 @@ class Generalized_RCNN(nn.Module):
 
                 return_dict['losses']['cls_loss'] = cls_loss
                 return_dict['losses']['bbox_loss'] = bbox_loss
+
             # pytorch0.4 bug on gathering scalar(0-dim) tensors
             for k, v in return_dict['losses'].items():
                 return_dict['losses'][k] = v.unsqueeze(0)

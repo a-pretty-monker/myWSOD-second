@@ -13,6 +13,24 @@ SOLVER:
   # 1x schedule (note TRAIN.IMS_PER_BATCH: 1)
   MAX_ITER: 200000
   STEPS: [0, 50000]
+OICR:
+  Need_Reg: True
+  Use_Reg_Lastbranch: True
+  Test_Need_Regcls: True
+  Bg2_Loss_Type: 'binary_cross_entropy'
+  Bg2_Loss_Weight: 3.0
+  Bg2_Loss_Weight_Chg: 1.0
+  Bg2_Loss_Weight_ChgIter: 0.7
+  Bg2_SelGT_Ori_Type: 'fg_oicr'
+  Bg2_SelGT_Type: 'oicr_fg'
+  Bg2_StartIter: 0.30
+  Bg2_SelGT_Ratio: 0.14
+  Bg2_SelGT_Iou: True
+  Bg2_SelGT_Multi: True
+  Bg2_Loss_Multi: True
+  Bg2_Test: True
+  Bg2_Test_MIL: True
+  Bg2_Test_Type_BgWeight: 1.0
 FAST_RCNN:
   ROI_BOX_HEAD: vgg16.roi_2mlp_head
   ROI_XFORM_METHOD: RoIPoolF

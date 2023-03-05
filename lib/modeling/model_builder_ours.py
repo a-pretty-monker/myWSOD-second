@@ -114,14 +114,14 @@ class Generalized_RCNN(nn.Module):
             for p in self.Conv_Body.parameters():
                 p.requires_grad = False
 
-    def forward(self, data, rois,labels):
+    def forward(self, data, rois,labels,step = 0):
         if cfg.PYTORCH_VERSION_LESS_THAN_040:
-            return self._forward(data, rois,labels)
+            return self._forward(data, rois,labels,step)
         else:
             with torch.set_grad_enabled(self.training):
-                return self._forward(data, rois,  labels)
+                return self._forward(data, rois,  labels,step)
 
-    def _forward(self, data, rois, labels):
+    def _forward(self, data, rois, labels, step):
         im_data = data
         if self.training:
             rois = rois.squeeze(dim=0).type(im_data.dtype)
@@ -151,6 +151,20 @@ class Generalized_RCNN(nn.Module):
 
         if self.training:
             return_dict['losses'] = {}
+            # if cfg.OICR.Need_Reg:
+            #     box_deltas = bbox_pred.data
+            #     if cfg.TRAIN.BBOX_NORMALIZE_TARGETS_PRECOMPUTED:
+            #         box_deltas = box_deltas.view(-1, 4) * torch.FloatTensor(cfg.TRAIN.BBOX_NORMALIZE_STDS).cuda() \
+            #                     + torch.FloatTensor(cfg.TRAIN.BBOX_NORMALIZE_MEANS).cuda()
+            #         box_deltas = box_deltas.view(-1, 4 * (cfg.MODEL.NUM_CLASSES + 1))
+            #     pred_boxes = bbox_transform_inv(rois_n, box_deltas, 1)
+            #     im_shape = data.shape[-2:]
+            #     pred_boxes = box_utils.clip_boxes_2(pred_boxes, im_shape)
+            # else:
+            pred_boxes=None
+
+
+
 
             # image classification loss
             im_cls_score = mil_score.sum(dim=0, keepdim=True)
@@ -161,39 +175,44 @@ class Generalized_RCNN(nn.Module):
             Chg_Weight = step > cfg.SOLVER.MAX_ITER * cfg.OICR.Bg2_Loss_Weight_ChgIter
             Bg2_Loss_Weight = cfg.OICR.Bg2_Loss_Weight_Chg if Chg_Weight else cfg.OICR.Bg2_Loss_Weight
 
-            #GAEloss
 
-            mask = 1 - np.diag(np.ones(matrix.shape[0]))
-            bg_index = np.nonzero((bg_fg_score < 0.5) * mask)
-            a = edges[0,:]
-            b = edges[1,:]
-            true_index = a not in bg_index & b not in bg_index
-            true_edges = edges[true_index]
 
-            gae_loss = new_edge.recon_loss(z, true_edges)*Bg2_Loss_Weight
 
-            return_dict['losses']['gae_loss'] = gae_loss.clone()
+            # bg_fg loss
+            boxes = rois.data.cpu().numpy()
+            im_labels = labels.data.cpu().numpy()
+            boxes = boxes[:, 1:]
+            pcl_output = OICR(boxes, mil_score, im_labels, bg_fg_score, bgfg=True)
             if cfg.OICR.Bg2_Loss_Type == 'cross_entropy':
                 bgfg_loss = self.BgFg_Losses(bg_fg_score, pcl_output['labels'],
                                                 pcl_output['cls_loss_weights'])
             elif cfg.OICR.Bg2_Loss_Type == 'binary_cross_entropy':
-                bgfg_loss = F.binary_cross_entropy_with_logits(bg_fg_score, pcl_output['labels'],
-                                                                        weight=pcl_output['cls_loss_weights'])
+                bgfg_loss = F.binary_cross_entropy_with_logits(bg_fg_score, pcl_output['labels'])
+                # weight = pcl_output['cls_loss_weights']
             bgfg_loss = bgfg_loss * Bg2_Loss_Weight
 
             return_dict['losses']['bgfg_loss'] = bgfg_loss.clone()
 
+            # GAEloss
+            bg_fg_score_x = bg_fg_score.detach().cpu().numpy()
+            a = bg_fg_score_x[edge[0, :].detach().cpu().numpy()]
+            b = bg_fg_score_x[edge[1, :].detach().cpu().numpy()]
+            true_index = np.where((a > 0.5) & (b > 0.5))
+            true_edges = edge[:, true_index]
+
+            gae_loss = new_edge.recon_loss(z, true_edges)
+
+            return_dict['losses']['gae_loss'] = gae_loss.clone() if step > cfg.SOLVER.MAX_ITER * cfg.OICR.Bg2_Loss_Weight_ChgIter else gae_loss.clone()*0.5
             # refinement loss
-            boxes = rois.data.cpu().numpy()
-            im_labels = labels.data.cpu().numpy()
-            boxes = boxes[:, 1:]
+
+
 
             for i_refine, refine in enumerate(refine_score):
                 if i_refine == 0:
-                    pcl_output = OICR(boxes, mil_score, im_labels, refine)
+                    pcl_output = OICR(boxes, mil_score, im_labels, refine,bgfg=False)
                 else:
                     pcl_output = OICR(boxes, refine_score[i_refine - 1],
-                                      im_labels, refine)
+                                      im_labels, refine,bgfg=False)
 
                 refine_loss = self.Refine_Losses[i_refine](
                     refine,

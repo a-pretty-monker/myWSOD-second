@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+
 import utils.boxes as box_utils
 import utils.blob as blob_utils
 import utils.net as net_utils
@@ -43,51 +45,91 @@ def PCL(boxes, cls_prob, im_labels, cls_prob_new):
             'bbox_outside_weights' : bbox_outside_weights.astype(np.float32).copy()}
 
 
-def OICR(boxes, cls_prob, im_labels, cls_prob_new):
+def OICR(boxes, cls_prob, im_labels, bgfg_score, bgfg):
 
     cls_prob = cls_prob.data.cpu().numpy()
-    cls_prob_new = cls_prob_new.data.cpu().numpy()
+    # cls_prob_new = cls_prob_new.data.cpu().numpy()
     if cls_prob.shape[1] != im_labels.shape[1]:
         cls_prob = cls_prob[:, 1:]
     eps = 1e-9
     cls_prob[cls_prob < eps] = eps
     cls_prob[cls_prob > 1 - eps] = 1 - eps
 
-    if bgfg_score is not None:
-        if sigmoid:
-            bgfg_score = bgfg_score.sigmoid()
-            bgfg_score = bgfg_score.data.cpu().numpy()
-            bgfg_score = bgfg_score[:, 0]
+    # if bgfg_score is not None:
+    #     if sigmoid:
+    #         bgfg_score = bgfg_score.sigmoid()
+    #         bgfg_score = bgfg_score.data.cpu().numpy()
+    #         bgfg_score = bgfg_score[:, 0]
     num_classes = cfg.MODEL.NUM_CLASSES+1
 
     if bgfg:
-        proposals = _get_highest_score_proposals(boxes, cls_prob, im_labels, is_fgbg=True, vis_needed=vis_needed, step=step)
+        proposals = _get_highest_score_proposals(boxes, cls_prob, im_labels, is_fgbg=True)
 
-        labels, cls_loss_weights = _sample_rois_bgfg(boxes, proposals, num_classes, pred_boxes)
+        labels, cls_loss_weights = _sample_rois_bgfg(boxes, proposals, num_classes)
+        
         return {'labels' : torch.FloatTensor(labels).cuda().detach(),
                 'cls_loss_weights' : torch.tensor(cls_loss_weights).cuda().detach()
                 }
 
-    if cfg.OICR.Need_Reg:
-        proposals = _get_highest_score_proposals(boxes, cls_prob, im_labels, bgfg_score, step, vis_needed)
-        labels, cls_loss_weights, labels_ori, bbox_targets, bbox_inside_weights, cls_loss_weights_reg = \
-            _sample_rois(boxes, proposals, num_classes, pred_boxes, bgfg_score, vis_needed=vis_needed, step=step)
-        return {'labels' : torch.FloatTensor(labels).cuda().detach(),
-                'cls_loss_weights' : torch.FloatTensor(cls_loss_weights).cuda().detach(),
-                'rois_labels' : labels_ori.long().cuda().detach(),
-                'bbox_targets' : bbox_targets.cuda().detach(),
-                'bbox_inside_weights' : bbox_inside_weights.cuda().detach(),
-                'cls_loss_weights_reg' : torch.FloatTensor(cls_loss_weights_reg).cuda().detach(),
-                }
+    # if cfg.OICR.Need_Reg:
+    #     proposals = _get_highest_score_proposals(boxes, cls_prob, im_labels, bgfg_score)
+    #     labels, cls_loss_weights, labels_ori, bbox_targets, bbox_inside_weights, cls_loss_weights_reg = \
+    #         _sample_rois(boxes, proposals, num_classes, bgfg_score, vis_needed=vis_needed, step=step)
+    #     return {'labels' : torch.FloatTensor(labels).cuda().detach(),
+    #             'cls_loss_weights' : torch.FloatTensor(cls_loss_weights).cuda().detach(),
+    #             'rois_labels' : labels_ori.long().cuda().detach(),
+    #             'bbox_targets' : bbox_targets.cuda().detach(),
+    #             'bbox_inside_weights' : bbox_inside_weights.cuda().detach(),
+    #             'cls_loss_weights_reg' : torch.FloatTensor(cls_loss_weights_reg).cuda().detach(),
+    #             }
+    #
+    # else:
+    proposals = _get_highest_score_proposals(boxes, cls_prob, im_labels, bgfg_score)
+    labels, cls_loss_weights, gt_assignment, bbox_targets, bbox_inside_weights, bbox_outside_weights \
+        = get_proposal_clusters(boxes.copy(), proposals, im_labels.copy())
 
-    else:
-        proposals = _get_highest_score_proposals(boxes, cls_prob, im_labels, bgfg_score, step)
-        labels, cls_loss_weights = _sample_rois(boxes, proposals, num_classes, bgfg_scores=bgfg_score, cls_prob=cls_prob, step=step)
+    return {'labels': labels.reshape(1, -1).astype(np.int64).copy(),
+            'cls_loss_weights': cls_loss_weights.reshape(1, -1).astype(np.float32).copy(),
+            'gt_assignment': gt_assignment.reshape(1, -1).astype(np.float32).copy(),
+            'bbox_targets': bbox_targets.astype(np.float32).copy(),
+            'bbox_inside_weights': bbox_inside_weights.astype(np.float32).copy(),
+            'bbox_outside_weights': bbox_outside_weights.astype(np.float32).copy()}
 
-        return {'labels' : torch.FloatTensor(labels).cuda().detach(),
-                'cls_loss_weights' : torch.tensor(cls_loss_weights).cuda().detach(),
-                }
+def _compute_targets(ex_rois, gt_rois, labels):
+    """Compute bounding-box regression targets for an image."""
 
+    assert ex_rois.shape[0] == gt_rois.shape[0]
+    assert ex_rois.shape[1] == 4
+    assert gt_rois.shape[1] == 4
+
+    targets = box_utils.bbox_transform_inv(ex_rois, gt_rois,
+                                           cfg.MODEL.BBOX_REG_WEIGHTS)
+    return np.hstack((labels[:, np.newaxis], targets)).astype(
+        np.float32, copy=False)
+
+def _expand_bbox_targets(bbox_target_data):
+    """Bounding-box regression targets are stored in a compact form in the
+    roidb.
+    This function expands those targets into the 4-of-4*K representation used
+    by the network (i.e. only one class has non-zero targets). The loss weights
+    are similarly expanded.
+    Returns:
+        bbox_target_data (ndarray): N x 4K blob of regression targets
+        bbox_inside_weights (ndarray): N x 4K blob of loss weights
+    """
+    num_bbox_reg_classes = cfg.MODEL.NUM_CLASSES + 1
+
+    clss = bbox_target_data[:, 0]
+    bbox_targets = blob_utils.zeros((clss.size, 4 * num_bbox_reg_classes))
+    bbox_inside_weights = blob_utils.zeros(bbox_targets.shape)
+    inds = np.where(clss > 0)[0]
+    for ind in inds:
+        cls = int(clss[ind])
+        start = 4 * cls
+        end = start + 4
+        bbox_targets[ind, start:end] = bbox_target_data[ind, 1:]
+        bbox_inside_weights[ind, start:end] = (1.0, 1.0, 1.0, 1.0)
+    return bbox_targets, bbox_inside_weights
 
 def _sample_rois(all_rois, proposals, num_classes, reg_boxes=None, bgfg_scores=None, cls_prob=None, step=0,
                  vis_needed=None):
@@ -124,20 +166,20 @@ def _sample_rois(all_rois, proposals, num_classes, reg_boxes=None, bgfg_scores=N
     for i in range(labels.shape[0]):
         real_labels[i, labels[i]] = 1
 
-    if cfg.OICR.Need_Reg:
-        # regression
-        all_rois = torch.tensor(all_rois)
-        gt_rois = torch.tensor(gt_boxes[gt_assignment, :])
-        labels = torch.tensor(labels)
-        bbox_target_data = _compute_targets_pytorch(all_rois, gt_rois)
-        bbox_targets, bbox_inside_weights = \
-            _get_bbox_regression_labels_pytorch(bbox_target_data, labels, num_classes)
-        cls_loss_weights_reg = cls_loss_weights.copy()
-
-        return real_labels, cls_loss_weights, labels, bbox_targets, bbox_inside_weights, cls_loss_weights_reg
-
-    else:
-        return real_labels, cls_loss_weights
+    # if cfg.OICR.Need_Reg:
+    #     # regression
+    #     all_rois = torch.tensor(all_rois)
+    #     gt_rois = torch.tensor(gt_boxes[gt_assignment, :])
+    #     labels = torch.tensor(labels)
+    #     bbox_target_data = _compute_targets_pytorch(all_rois, gt_rois)
+    #     bbox_targets, bbox_inside_weights = \
+    #         _get_bbox_regression_labels_pytorch(bbox_target_data, labels, num_classes)
+    #     cls_loss_weights_reg = cls_loss_weights.copy()
+    #
+    #     return real_labels, cls_loss_weights, labels, bbox_targets, bbox_inside_weights, cls_loss_weights_reg
+    #
+    # else:
+    return real_labels, cls_loss_weights
 
 
 def _sample_rois_bgfg(all_rois, proposals, num_classes, reg_boxes=None):
@@ -262,11 +304,10 @@ class OICRLosses(nn.Module):
     def __init__(self):
         super(OICRLosses, self).__init__()
 
-    def forward(self, prob, labels_ic, cls_loss_weights, eps=1e-6):
-        loss = (labels_ic * torch.log(prob + eps))
-        loss = loss.sum(dim=1)
-        loss = -cls_loss_weights * loss
-        ret = loss.sum() / loss.numel()
+    def forward(self, prob, labels, cls_loss_weights, gt_assignments, eps = 1e-6):
+        loss = torch.log(prob + eps)[range(prob.size(0)), labels]
+        loss *= -cls_loss_weights
+        ret = loss.mean()
         return ret
 
 
@@ -413,3 +454,96 @@ def draw_pics_pic_2(vis_needed, oicr_seeds, output_dir, extra_name=None):
                         1.0, (0, 0, 255), thickness=1)
     sav_pic = os.path.join(output_dir, sav_img_name)
     cv2.imwrite(sav_pic, im)
+
+
+class PCLLosses(nn.Module):
+
+    def forward(ctx, pcl_probs, labels, cls_loss_weights, gt_assignments):
+        cls_loss = 0.0
+        weight = cls_loss_weights.view(-1).float()
+        labels = labels.view(-1)
+        gt_assignments = gt_assignments.view(-1)
+
+        for gt_assignment in gt_assignments.unique():
+            inds = torch.nonzero(gt_assignment == gt_assignments,
+                as_tuple=False).view(-1)
+            if gt_assignment == -1:
+                assert labels[inds].sum() == 0
+                cls_loss -= (torch.log(pcl_probs[inds, 0].clamp(1e-9, 10000))
+                         * weight[inds]).sum()
+            else:
+                assert labels[inds].unique().size(0) == 1
+                label_cur = labels[inds[0]]
+                cls_loss -= torch.log(
+                    pcl_probs[inds, label_cur].clamp(1e-9,  10000).mean()
+                    ) * weight[inds].sum()
+
+        return cls_loss / max(float(pcl_probs.size(0)), 1.)
+def get_proposal_clusters(all_rois, proposals, im_labels):
+    """Generate a random sample of RoIs comprising foreground and background
+    examples.
+    """
+    num_images, num_classes = im_labels.shape
+    assert num_images == 1, 'batch size shoud be equal to 1'
+    # overlaps: (rois x gt_boxes)
+    gt_boxes = proposals['gt_boxes']
+    gt_labels = proposals['gt_classes']
+    gt_scores = proposals['gt_scores']
+    overlaps = box_utils.bbox_overlaps(
+        all_rois.astype(dtype=np.float32, copy=False),
+        gt_boxes.astype(dtype=np.float32, copy=False))
+    gt_assignment = overlaps.argmax(axis=1)
+    max_overlaps = overlaps.max(axis=1)
+    labels = gt_labels[gt_assignment, 0]
+    cls_loss_weights = gt_scores[gt_assignment, 0]
+
+    # Select foreground RoIs as those with >= FG_THRESH overlap
+    fg_inds = np.where(max_overlaps >= cfg.TRAIN.FG_THRESH)[0]
+
+    # Select background RoIs as those with < FG_THRESH overlap
+    bg_inds = np.where(max_overlaps < cfg.TRAIN.FG_THRESH)[0]
+
+    ig_inds = np.where(max_overlaps < cfg.TRAIN.BG_THRESH)[0]
+    cls_loss_weights[ig_inds] = 0.0
+
+    labels[bg_inds] = 0
+
+    if cfg.MODEL.WITH_FRCNN:
+        bbox_targets = _compute_targets(all_rois, gt_boxes[gt_assignment, :],
+            labels)
+        bbox_targets, bbox_inside_weights = _expand_bbox_targets(bbox_targets)
+        bbox_outside_weights = np.array(
+            bbox_inside_weights > 0, dtype=bbox_inside_weights.dtype) \
+            * cls_loss_weights.reshape(-1, 1)
+    else:
+        bbox_targets, bbox_inside_weights, bbox_outside_weights = np.array([0]), np.array([0]), np.array([0])
+
+    gt_assignment[bg_inds] = -1
+
+    return labels, cls_loss_weights, gt_assignment, bbox_targets, bbox_inside_weights, bbox_outside_weights
+
+def _get_highest_score_proposals(boxes, cls_prob, im_labels,is_fgbg=False):
+    """Get proposals with highest score."""
+
+    num_images, num_classes = im_labels.shape
+    assert num_images == 1, 'batch size shoud be equal to 1'
+    im_labels_tmp = im_labels[0, :]
+    gt_boxes = np.zeros((0, 4), dtype=np.float32)
+    gt_classes = np.zeros((0, 1), dtype=np.int32)
+    gt_scores = np.zeros((0, 1), dtype=np.float32)
+    for i in xrange(num_classes):
+        if im_labels_tmp[i] == 1:
+            cls_prob_tmp = cls_prob[:, i].copy()
+            max_index = np.argmax(cls_prob_tmp)
+
+            gt_boxes = np.vstack((gt_boxes, boxes[max_index, :].reshape(1, -1)))
+            gt_classes = np.vstack((gt_classes, (i + 1) * np.ones((1, 1), dtype=np.int32)))
+            gt_scores = np.vstack((gt_scores,
+                                   cls_prob_tmp[max_index] * np.ones((1, 1), dtype=np.float32)))
+            cls_prob[max_index, :] = 0
+
+    proposals = {'gt_boxes' : gt_boxes,
+                 'gt_classes': gt_classes,
+                 'gt_scores': gt_scores}
+
+    return proposals
